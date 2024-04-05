@@ -1,0 +1,64 @@
+.docker_scripts: &docker_scripts
+  before_script:
+    - docker login $CI_REGISTRY -u $CI_REGISTRY_USER -p $CI_REGISTRY_PWD
+  after_script:
+    - docker logout 
+
+.base_builds: &base_builds
+  stage: build
+  script:
+    - > 
+      docker build
+      --push
+      --progress plain
+      --tag ${CI_REGISTRY_IMAGE}:${TARGET_SERVICE}_${CI_COMMIT_REF_SLUG}_${CI_COMMIT_SHA}
+      -f Dockerfile.${TARGET_SERVICE}
+      ./
+
+.base_release: &base_release
+  stage: release
+  script:
+    - docker pull ${CI_REGISTRY_IMAGE}:${TARGET_SERVICE}_${CI_COMMIT_REF_SLUG}_${CI_COMMIT_SHA}
+    - > 
+      docker tag 
+      ${CI_REGISTRY_IMAGE}:${TARGET_SERVICE}_${CI_COMMIT_REF_SLUG}_${CI_COMMIT_SHA}
+      ${CI_REGISTRY_IMAGE}:${TARGET_SERVICE}-latest
+    - docker push ${CI_REGISTRY_IMAGE}:${TARGET_SERVICE}-latest
+
+default:
+  image: docker:25.0.5
+  tags:
+    - docker
+
+stages:
+  - build
+  - release
+  - deploy
+
+variables:
+  TARGET_SERVICE: frontend
+
+build_frontend:
+  <<: *docker_scripts
+  <<: *base_builds
+
+release_frontend:
+  <<: *docker_scripts
+  <<: *base_release
+  needs: 
+    - job: build_frontend
+ 
+deploy:
+  stage: deploy
+  image: dtzar/helm-kubectl:3.13.3
+  tags:
+    - tenders
+  needs:
+    - release_frontend
+  script:
+    - kubectl config use-context artw/tenders/x5-lot-14:gla-lot-14
+    - kubectl apply -f .kube/ns.yml
+    - kubectl apply -f .kube/registry.yml
+    - kubectl apply -f .kube/ingress.yml # Запускаем Ingress controller
+    - kubectl apply -f .kube/frontend.yml # Запускаем frontend
+    - kubectl rollout restart deployment/frontend-deploy -n x5-lot14
